@@ -1,0 +1,10 @@
+# Ignore Pycharm
+.idea
+__pycache__/
+
+# Ingore Virtual Enviroment
+env/
+
+# Ingore evaluation folder and tmp folder
+evaluation/
+tmp/
