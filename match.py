@@ -55,7 +55,7 @@ def tokenize(es, index, text):
     res = es.indices.analyze(
         index=index,
         body={
-            "analyzer": "stopped",
+            "analyzer": "rebuilt_english",
             "text": text
         }
     )
@@ -121,7 +121,7 @@ def get_taw_ttf(es, index, term):
     if term not in TTF_SCORES:
         doc_id = es.search(
             index=index,
-            body={"query": {"match": {"text": term}}},
+            body={"query": {"term": {"text": term}}},
             _source=False, size=1
         )["hits"]["hits"][0]["_id"]
         TTF_SCORES[term] = es.termvectors(
@@ -223,7 +223,7 @@ def tf_idf_model(es, index, tokens):
 
 def bm_25_model(es, index, tokens):
     def score(d, q):
-        k1 = 1.2
+        k1 = 1.5  # k1 is bumped up by 0.2 to the standard 1.2
         k2 = 500
         b = 0.75
         ans = 0
@@ -327,7 +327,7 @@ if __name__ == '__main__':
     query_file_path = "/Users/tianzerun/Desktop/hw1/data/AP_DATA/simplified_query_l2.txt"
 
     use_models = (M_ES_BUILT_IN, M_TF, M_TF_IDF, M_BM_25, M_ULM_LAPLACE, M_ULM_JM)
-    main("ap_dataset", query_file_path, M_BM_25)
+    main("ap_dataset", query_file_path, M_ULM_JM)
     print(TTF_SCORES)
 
     print(f"Total time: {time_used(engine_start_time)}{linesep}")
