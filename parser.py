@@ -65,17 +65,22 @@ def create_index(index_name, es_instance):
                     "english_stop": {
                         "type": "stop",
                         "stopwords_path": "stoplist.txt"
-                    }
+                    },
+                    "english_stemmer": {
+                        "type": "stemmer",
+                        "language": "english"
+                    },
                 },
                 "analyzer": {
-                    "stopped": {
+                    "rebuilt_english": {
                         "type": "custom",
                         "tokenizer": "standard",
                         "filter": [
                             "lowercase",
-                            "english_stop"
+                            "english_stop",
+                            "english_stemmer"
                         ]
-                    }
+                    },
                 }
             }
         },
@@ -84,7 +89,7 @@ def create_index(index_name, es_instance):
                 "text": {
                     "type": "text",
                     "fielddata": True,
-                    "analyzer": "stopped",
+                    "analyzer": "rebuilt_english",
                     "index_options": "positions"
                 }
             }
