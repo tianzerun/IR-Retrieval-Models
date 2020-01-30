@@ -39,7 +39,8 @@ On average, the retrieval precision increases in the order: l0 < l1 < l4 < l2 < 
 |**l1** |0.2438      |**0.1773** |**0.2548** |0.2431     |0.1778      |0.2020 |
 |**l2** |0.3279      |0.2270     |**0.3337** |0.3195     |**0.2195**  |0.2897 |
 |**l3** |0.3553      |0.3057     |0.3456     |**0.3495** |**0.2665**  |0.3335 |
-|**l4** |0.2788      |0.2153     |0.2871     |**0.2903** |**0.2022**  |0.2621 |
+|**l4** |0.2788      |0.2153     |0.2871     |**0.2903** |**0.2022**  |0.2621 |  
+
 *This table shows the uninterpolated average precision for all six models when running against queries modified at different levels explained above.*
 
 
