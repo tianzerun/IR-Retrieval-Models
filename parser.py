@@ -1,5 +1,6 @@
 import re
 import os
+import constants
 from elasticsearch import Elasticsearch, helpers
 from collections import namedtuple
 
@@ -55,50 +56,10 @@ def file_parser(file_path, metadata=None):
             raise error
 
 
-def create_index(index_name, es_instance):
-    body = {
-        "settings": {
-            "number_of_shards": 1,
-            "number_of_replicas": 1,
-            "analysis": {
-                "filter": {
-                    "english_stop": {
-                        "type": "stop",
-                        "stopwords_path": "stoplist.txt"
-                    },
-                    "english_stemmer": {
-                        "type": "stemmer",
-                        "language": "english"
-                    },
-                },
-                "analyzer": {
-                    "rebuilt_english": {
-                        "type": "custom",
-                        "tokenizer": "standard",
-                        "filter": [
-                            "lowercase",
-                            "english_stop",
-                            "english_stemmer"
-                        ]
-                    },
-                }
-            }
-        },
-        "mappings": {
-            "properties": {
-                "text": {
-                    "type": "text",
-                    "fielddata": True,
-                    "analyzer": "rebuilt_english",
-                    "index_options": "positions"
-                }
-            }
-        }
-    }
-
+def create_index(index_name, es_instance, index_config):
     try:
         if not es_instance.indices.exists(index_name):
-            es_instance.indices.create(index=index_name, body=body)
+            es_instance.indices.create(index=index_name, body=index_config)
             print('Created Index')
     except Exception as ex:
         raise ex
@@ -114,17 +75,19 @@ def batch_files(dir_path, metadata=None):
             yield from file_parser(abs_path, metadata)
 
 
-def main(data_folder, index_name):
+def main(hostname, data_folder, index_name, index_config):
     metadata = {"_index": index_name}
     # connect to the ElasticSearch cluster, running on the default port 9200
-    client = Elasticsearch("http://localhost:9200")
-    create_index(index_name=index_name, es_instance=client)
+    client = Elasticsearch(hostname)
+    create_index(index_name=index_name, es_instance=client, index_config=index_config)
     # parse files and send parsed files to the ElasticSearch instance
     helpers.bulk(client=client, actions=batch_files(data_folder, metadata))
     print("Docs are indexed in ElasticSearch")
 
 
 if __name__ == '__main__':
+    host = "http://localhost:9200"
     docs_location = "/Users/tianzerun/Desktop/hw1/data/AP_DATA/ap89_collection"
     index = "ap_dataset"
-    main(docs_location, index)
+    config = constants.AP_DATASET_INDEX_CONFIG
+    main(host, docs_location, index, config)

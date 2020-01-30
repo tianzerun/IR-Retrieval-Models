@@ -6,12 +6,12 @@ from os import linesep
 from elasticsearch import Elasticsearch, helpers
 from heap import MaxHeap
 
-RANKING_FOLDER = "/Users/tianzerun/Desktop/hw1/code/evaluation"
+EVAL_FOLDER = "/Users/tianzerun/Desktop/hw1/code/evaluation"
 QUERY_REGEX = re.compile(r"^([0-9]+)\.\s*(.*)")
 AVG_DOC_LENGTH = 0
 SUM_TTF = 0
 D = 0  # total number of documents in corpus
-V = 232575  # total number of unique terms in corpus (229252 counted by this program)
+V = 0  # total number of unique terms in corpus
 DOC_LENGTH = "length"
 DOC_ID = "doc_id"
 FIELD_STATS = "field_statistics"
@@ -106,10 +106,12 @@ def fetch_docs(es, index_name, ids):
 
 def get_raw_df(es, index, term):
     if term not in DF_SCORES:
-        DF_SCORES[term] = es.count(
+        df = es.count(
             index=index,
-            body={"query": {"term": {"text": term}}}
+            body={"query": {"match": {"text": term}}}
         ).get("count", 0)
+        df = D if df == 0 else df
+        DF_SCORES[term] = df
     return DF_SCORES[term]
 
 
@@ -117,28 +119,32 @@ def get_raw_tf(doc, term):
     return 0 if doc[TERMS].get(term) is None else doc[TERMS][term]["term_freq"]
 
 
-def get_taw_ttf(es, index, term):
+def get_raw_ttf(es, index, term):
     if term not in TTF_SCORES:
-        doc_id = es.search(
+        hits = es.search(
             index=index,
             body={"query": {"term": {"text": term}}},
             _source=False, size=1
-        )["hits"]["hits"][0]["_id"]
-        TTF_SCORES[term] = es.termvectors(
-            index=index,
-            id=doc_id,
-            fields=["text"],
-            body={
-                "filter": {
-                    "min_word_length": len(term),
-                    "max_word_length": len(term)
-                }
-            },
-            term_statistics=True,
-            field_statistics=False,
-            offsets=False,
-            positions=False
-        )["term_vectors"]["text"]["terms"][term]["ttf"]
+        )["hits"]["hits"]
+        if len(hits) == 0:
+            TTF_SCORES[term] = 1
+        else:
+            doc_id = hits[0]["_id"]
+            TTF_SCORES[term] = es.termvectors(
+                index=index,
+                id=doc_id,
+                fields=["text"],
+                body={
+                    "filter": {
+                        "min_word_length": len(term),
+                        "max_word_length": len(term)
+                    }
+                },
+                term_statistics=True,
+                field_statistics=False,
+                offsets=False,
+                positions=False
+            )["term_vectors"]["text"]["terms"][term]["ttf"]
     return TTF_SCORES[term]
 
 
@@ -154,6 +160,7 @@ def okapi_tf(doc, term):
 
 def get_metadata(es, index_name):
     global D
+    global V
     global AVG_DOC_LENGTH
     global SUM_TTF
     field_stats = es.termvectors(
@@ -164,6 +171,10 @@ def get_metadata(es, index_name):
     SUM_TTF = field_stats["sum_ttf"]
     D = field_stats["doc_count"]
     AVG_DOC_LENGTH = SUM_TTF // D
+    V = es.search(
+        index=index_name,
+        body={"aggs": {"unique_word_count": {"cardinality": {"field": "text"}}}, "size": 0}
+    )["aggregations"]["unique_word_count"]["value"]
 
 
 def get_related_docs(es, tokens):
@@ -260,7 +271,7 @@ def jelinek_mercer_smoothing_language_model(es, index, tokens):
     def p_jm(w, d):
         # the smoothing parameter lambda
         s_p = 0.8
-        return s_p * (get_raw_tf(d, w) / d[DOC_LENGTH]) + (1 - s_p) * (get_taw_ttf(es, index, w) / SUM_TTF)
+        return s_p * (get_raw_tf(d, w) / d[DOC_LENGTH]) + (1 - s_p) * (get_raw_ttf(es, index, w) / SUM_TTF)
 
     return model_template(
         es=es,
@@ -318,17 +329,16 @@ def main(index_name, file_path, *models):
             es=es,
             index=index_name,
             queries=tokenized_queries,
-            result_file=f"{RANKING_FOLDER}/{model}"
+            result_file=f"{EVAL_FOLDER}/{model}/{query_level}"
         )
 
 
 if __name__ == '__main__':
+    query_level = "l4"
+    query_file = f"/Users/tianzerun/Desktop/hw1/data/AP_DATA/query/{query_level}.txt"
     engine_start_time = time.time()
-    query_file_path = "/Users/tianzerun/Desktop/hw1/data/AP_DATA/simplified_query_l2.txt"
-
     use_models = (M_ES_BUILT_IN, M_TF, M_TF_IDF, M_BM_25, M_ULM_LAPLACE, M_ULM_JM)
-    main("ap_dataset", query_file_path, M_ULM_JM)
-    print(TTF_SCORES)
+    main("ap_dataset", query_file, *use_models)
 
     print(f"Total time: {time_used(engine_start_time)}{linesep}")
     sys.exit()
