@@ -27,9 +27,20 @@ In the `/query` folder, there are five files labeled l0.txt, l1.txt ... l4.txt.
     # often than the term is used on average in other documents which also used the term.
     important_words = [term for term in terms if tf(term) > (ttf(term) / df(term))]
     ```
+    After finding important terms in top documents, sort them based on their presence in top documents (i.e. A term is ranked the highest if it appears in all top documents.)
 - l4: pseudo-relevance feedback using ES aggs "significant terms"
 
 On average, the retrieval precision increases in the order: l0 < l1 < l4 < l2 < l3.
+
+
+### Metrics
+|Avg. Precision|ES-BUILT-IN |TF         |TF-IDF     |BM-25      |ULM-LAPLACE |ULM-JM |
+|:-----------: |:----------:|:---------:|:---------:|:---------:|:----------:|:-----:|
+|     l1       |0.2438      |**0.1773** |**0.2548** |0.2431     |0.1778      |0.2020 |
+|     l2       |0.3279      |0.2270     |**0.3337** |0.3195     |**0.2195**  |0.2897 |
+|     l3       |0.3553      |0.3057     |0.3456     |**0.3495** |**0.2665**  |0.3335 |
+|     l4       |0.2788      |0.2153     |0.2871     |**0.2903** |**0.2022**  |0.2621 |
+
 
 ### MISC
 - Assignment [Link](http://www.ccs.neu.edu/home/vip/teach/IRcourse/1_retrieval_models/HW1/HW1.html)
