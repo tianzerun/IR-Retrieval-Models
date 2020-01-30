@@ -334,7 +334,7 @@ def main(index_name, file_path, *models):
 
 
 if __name__ == '__main__':
-    query_level = "l4"
+    query_level = "l2"
     query_file = f"/Users/tianzerun/Desktop/hw1/data/AP_DATA/query/{query_level}.txt"
     engine_start_time = time.time()
     use_models = (M_ES_BUILT_IN, M_TF, M_TF_IDF, M_BM_25, M_ULM_LAPLACE, M_ULM_JM)
