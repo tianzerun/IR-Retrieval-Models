@@ -1,4 +1,6 @@
 import time
+import indexer
+import tokenizer
 from abc import ABC, abstractmethod
 from elasticsearch import Elasticsearch, helpers
 
@@ -171,19 +173,61 @@ class ESearch(Search):
         return self._es.search(index=self._index, **kwargs)
 
 
-if __name__ == '__main__':
-    es = ESearch(
-        hostname="http://localhost:9200",
-        index="ap_dataset",
-        field="text"
-    )
+class ZSearch(Search):
+    def __init__(self, index_fp, catalog, term_ids_map, doc_ids_map, doc_len_map,
+                 converter=indexer.TextProcessor, exclude=None, stemmer=None):
+        self._index_fp = index_fp
+        self._catalog = catalog
+        self._term_ids_map = term_ids_map
+        self._doc_ids_map = doc_ids_map
+        self._doc_len_map = doc_len_map
+        self._sum_ttf = sum(ttf for ttf in self._doc_len_map.values())
+        self._converter = converter
+        self._tokenizer = tokenizer.build_tokenizer(exclude=exclude, stemmer=stemmer)
+        self._cached_inverted_list = dict()
 
-    query = "a prediction about the prime lending rate, or will report an actual prime rate move"
-    print(es.tokenize(text=query))
-    esset = es.postings("china")
-    print(es.df("china"))
-    print(es.tf("china", "AP890707-0002"))
-    print(es.ttf("china"))
-    print(es.doc_count())
-    print(es.sum_ttf())
-    print(es.doc_length("AP890707-0002"))
+    def _load_inverted_list(self, term):
+        if term not in self._cached_inverted_list:
+            term_id = self._term_ids_map.get(term, None)
+            if term_id is not None:
+                offset = self._catalog.get_offset(term_id)
+                size = self._catalog.get_size(term_id)
+                raw = indexer.read(self._index_fp, offset, size, self._converter.decoder())
+                self._cached_inverted_list[term] = indexer.InvertedList.deserialize(raw)
+            else:
+                self._cached_inverted_list[term] = indexer.InvertedList.dummy()
+        return self._cached_inverted_list[term]
+
+    def tokenize(self, text):
+        return self._tokenizer(text)
+
+    def postings(self, term):
+        return set(self._doc_ids_map.inverse[_id]
+                   for _id in self._load_inverted_list(term).doc_ids)
+
+    def df(self, term):
+        return self._load_inverted_list(term).df()
+
+    def tf(self, term, doc):
+        persisted_doc_id = self._doc_ids_map[doc]
+        return self._load_inverted_list(term).tf(persisted_doc_id)
+
+    def ttf(self, term):
+        return self._load_inverted_list(term).ttf()
+
+    def doc_count(self):
+        return len(self._doc_ids_map)
+
+    def unique_word_count(self):
+        return len(self._term_ids_map)
+
+    def sum_ttf(self):
+        return self._sum_ttf
+
+    def doc_length(self, doc_id):
+        doc_integer_id = self._doc_ids_map[doc_id]
+        return self._doc_len_map[str(doc_integer_id)]
+
+    def cache_docs(self, ids):
+        pass
+
