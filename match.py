@@ -1,10 +1,8 @@
 import re
-import sys
 import time
 import math
 from os import linesep
 from heap import MaxHeap
-from search import ESearch
 
 EVAL_FOLDER = "./evaluation"
 QUERY_REGEX = re.compile(r"^([0-9]+)\.\s*(.*)")
@@ -50,12 +48,8 @@ def read_queries(file_path):
     return queries
 
 
-def tokenize(es, text):
-    return es.tokenize(text)
-
-
-def retrieve_postings(es, term):
-    return es.postings(term)
+def retrieve_postings(client, term):
+    return client.postings(term)
 
 
 def build_doc_struct(doc):
@@ -68,53 +62,53 @@ def build_doc_struct(doc):
     }
 
 
-def get_raw_df(es, term):
+def get_raw_df(client, term):
     if term not in DF_SCORES:
-        df = es.df(term)
+        df = client.df(term)
         df = D if df == 0 else df
         DF_SCORES[term] = df
     return DF_SCORES[term]
 
 
-def get_raw_tf(es, doc_id, term):
-    return es.tf(term, doc_id)
+def get_raw_tf(client, doc_id, term):
+    return client.tf(term, doc_id)
 
 
-def get_raw_ttf(es, term):
+def get_raw_ttf(client, term):
     if term not in TTF_SCORES:
-        TTF_SCORES[term] = es.ttf(term)
+        TTF_SCORES[term] = client.ttf(term)
     return TTF_SCORES[term]
 
 
-def okapi_tf(es, doc_id, term):
+def okapi_tf(client, doc_id, term):
     if doc_id not in TF_SCORES:
         TF_SCORES[doc_id] = dict()
     if term not in TF_SCORES[doc_id]:
-        tf = get_raw_tf(es, doc_id, term)
-        TF_SCORES[doc_id][term] = tf / (tf + 0.5 + 1.5 * (es.doc_length(doc_id) / AVG_DOC_LENGTH))
+        tf = get_raw_tf(client, doc_id, term)
+        TF_SCORES[doc_id][term] = tf / (tf + 0.5 + 1.5 * (client.doc_length(doc_id) / AVG_DOC_LENGTH))
     return TF_SCORES[doc_id][term]
 
 
-def get_metadata(es):
+def get_metadata(client):
     global D
     global V
     global AVG_DOC_LENGTH
     global SUM_TTF
-    SUM_TTF = es.sum_ttf()
-    D = es.doc_count()
+    SUM_TTF = client.sum_ttf()
+    D = client.doc_count()
     AVG_DOC_LENGTH = SUM_TTF // D
-    V = es.unique_word_count()
+    V = client.unique_word_count()
 
 
-def get_related_docs(es, tokens):
+def get_related_docs(client, tokens):
     relevant_docs = set()
     for token in tokens:
-        relevant_docs |= retrieve_postings(es, token)
+        relevant_docs |= retrieve_postings(client, token)
     return relevant_docs
 
 
-def write_query_results(qid, ranked_docs, result_folder):
-    with open(f"{result_folder}/ranking.txt", "a") as fp:
+def write_query_results(qid, ranked_docs, result_file):
+    with open(result_file, "a") as fp:
         for rank, (score, doc_id) in enumerate(ranked_docs, start=1):
             fp.write(f"{qid} Q0 {doc_id} {rank} {score} Exp{linesep}")
 
@@ -122,15 +116,15 @@ def write_query_results(qid, ranked_docs, result_folder):
 ##############################
 #           Models           #
 ##############################
-def es_built_in_model(es, tokens):
-    res = es.search(body={"query": {"match": {"text": " ".join(tokens)}}},
-                    size=1000, _source=False)
+def es_built_in_model(client, tokens):
+    res = client.search(body={"query": {"match": {"text": " ".join(tokens)}}},
+                        size=1000, _source=False)
     return [(item["_score"], item["_id"]) for item in res["hits"]["hits"]]
 
 
-def model_template(es, tokens, scoring_func, size=1000):
-    doc_ids = get_related_docs(es, tokens)
-    es.cache_docs(doc_ids)
+def model_template(client, tokens, scoring_func, size=1000):
+    doc_ids = get_related_docs(client, tokens)
+    client.cache_docs(doc_ids)
     scored_docs = MaxHeap(size)
     scoring_start_time = time.time()
     print(f"    score_docs={len(doc_ids)}(documents)")
@@ -141,63 +135,63 @@ def model_template(es, tokens, scoring_func, size=1000):
     return scored_docs.top()
 
 
-def tf_model(es, tokens):
+def tf_model(client, tokens):
     return model_template(
-        es=es,
+        client=client,
         tokens=tokens,
-        scoring_func=lambda d, q: sum(okapi_tf(es, d, w) for w in q)
+        scoring_func=lambda d, q: sum(okapi_tf(client, d, w) for w in q)
     )
 
 
-def tf_idf_model(es, tokens):
+def tf_idf_model(client, tokens):
     return model_template(
-        es=es,
+        client=client,
         tokens=tokens,
-        scoring_func=lambda d, q: sum(okapi_tf(es, d, w) * math.log(D / get_raw_df(es, w)) for w in q)
+        scoring_func=lambda d, q: sum(okapi_tf(client, d, w) * math.log(D / get_raw_df(client, w)) for w in q)
     )
 
 
-def bm_25_model(es, tokens):
+def bm_25_model(client, tokens):
     def score(d, q):
         k1 = 1.5  # k1 is bumped up by 0.2 to the standard 1.2
         k2 = 500
         b = 0.75
         ans = 0
         for w in q:
-            tf_w_d = get_raw_tf(es, d, w)
+            tf_w_d = get_raw_tf(client, d, w)
             tf_w_q = q.count(w)
-            c1 = math.log((D + 0.5) / (get_raw_df(es, w) + 0.5))
-            c2 = (tf_w_d + k1 * tf_w_d) / (tf_w_d + k1 * ((1 - b) + b * (d[DOC_LENGTH] / AVG_DOC_LENGTH)))
+            c1 = math.log((D + 0.5) / (get_raw_df(client, w) + 0.5))
+            c2 = (tf_w_d + k1 * tf_w_d) / (tf_w_d + k1 * ((1 - b) + b * (client.doc_length(d) / AVG_DOC_LENGTH)))
             c3 = (tf_w_q + k2 * tf_w_q) / (tf_w_q + k2)
             ans += c1 * c2 * c3
         return ans
 
     return model_template(
-        es=es,
+        client=client,
         tokens=tokens,
         scoring_func=score
     )
 
 
-def laplace_smoothing_language_model(es, tokens):
+def laplace_smoothing_language_model(client, tokens):
     def p_laplace(w, d):
-        return (get_raw_tf(es, d, w) + 1) / (d[DOC_LENGTH] + V)
+        return (get_raw_tf(client, d, w) + 1) / (client.doc_length(d) + V)
 
     return model_template(
-        es=es,
+        client=client,
         tokens=tokens,
         scoring_func=lambda d, q: sum(math.log(p_laplace(w, d)) for w in q)
     )
 
 
-def jelinek_mercer_smoothing_language_model(es, tokens):
+def jelinek_mercer_smoothing_language_model(client, tokens):
     def p_jm(w, d):
         # the smoothing parameter lambda
         s_p = 0.8
-        return s_p * (get_raw_tf(es, d, w) / d[DOC_LENGTH]) + (1 - s_p) * (get_raw_ttf(es, w) / SUM_TTF)
+        return s_p * (get_raw_tf(client, d, w) / client.doc_length(d)) + (1 - s_p) * (get_raw_ttf(client, w) / SUM_TTF)
 
     return model_template(
-        es=es,
+        client=client,
         tokens=tokens,
         scoring_func=lambda d, q: sum(math.log(p_jm(w, d)) for w in q)
     )
@@ -206,14 +200,14 @@ def jelinek_mercer_smoothing_language_model(es, tokens):
 ##############################
 #       Model Runner         #
 ##############################
-def run_engine_with(model, es, queries, result_file):
+def run_engine_with(model, client, queries, result_file):
     print(f"Model: {model.__name__}")
     run_model_start_time = time.time()
     for qid, tokens in queries.items():
         start = time.time()
         print(f"Run query={qid} with {model.__name__}")
         print(f"    tokens={tokens}")
-        write_query_results(qid, model(es=es, tokens=tokens), result_file)
+        write_query_results(qid, model(client=client, tokens=tokens), result_file)
         print(f"    total_time={time_used(start)}")
     print(f"Elapsed time: {time_used(run_model_start_time)}{linesep * 3}")
 
@@ -223,42 +217,3 @@ def run_engine_with(model, es, queries, result_file):
 ##############################
 # Available models to use for the purpose of scoring documents given a query.
 # Do not change the representations arbitrarily as they map to dir names.
-M_BM_25 = "BM-25"
-M_ES_BUILT_IN = "ES-BUILT-IN"
-M_TF = "TF"
-M_TF_IDF = "TF-IDF"
-M_ULM_LAPLACE = "ULM-LAPLACE"
-M_ULM_JM = "ULM-JM"
-
-
-def main(index_name, file_path, *models):
-    model_mapping = {
-        M_ES_BUILT_IN: es_built_in_model,
-        M_TF: tf_model,
-        M_TF_IDF: tf_idf_model,
-        M_BM_25: bm_25_model,
-        M_ULM_LAPLACE: laplace_smoothing_language_model,
-        M_ULM_JM: jelinek_mercer_smoothing_language_model
-    }
-    es = ESearch(hostname="http://localhost:9200", index=index_name, field="text")
-    get_metadata(es)
-    tokenized_queries = {key: tokenize(es, value)
-                         for key, value in read_queries(file_path).items()}
-    for model in models:
-        run_engine_with(
-            model=model_mapping[model],
-            es=es,
-            queries=tokenized_queries,
-            result_file=f"{EVAL_FOLDER}/{model}/{query_level}"
-        )
-
-
-if __name__ == '__main__':
-    query_level = "l3"
-    query_file = f"/Users/tianzerun/Desktop/CS6200/hw1/data/AP_DATA/query/{query_level}.txt"
-    engine_start_time = time.time()
-    use_models = (M_ES_BUILT_IN, M_TF, M_TF_IDF, M_BM_25, M_ULM_LAPLACE, M_ULM_JM)
-    main("ap_dataset", query_file, M_TF_IDF)
-
-    print(f"Total time: {time_used(engine_start_time)}{linesep}")
-    sys.exit()
