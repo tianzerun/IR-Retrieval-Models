@@ -118,7 +118,7 @@ def main():
 
     get_metadata(es, index)
     raw_queries = match.read_queries(level2_query_file)
-    tokenized_queries = {key: match.tokenize(es, index, value) for key, value in raw_queries.items()}
+    tokenized_queries = {key: match.tokenize(es, value) for key, value in raw_queries.items()}
 
     pr_feedback_queries = dict()
     for qid, tokens in tokenized_queries.items():
