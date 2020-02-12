@@ -114,6 +114,10 @@ class Posting(object):
     def doc_id(self):
         return self._doc_id
 
+    @property
+    def positions(self):
+        return self._positions
+
     def tf(self):
         return self._tf
 
@@ -180,6 +184,14 @@ class InvertedList(object):
         return f"{self._term}" \
                f"{self.splitter}" \
                f"{self.posting_splitter.join([Posting.serialize(pos) for pos in self._postings.values()])}"
+
+    def has_doc(self, _id):
+        return _id in self._postings
+
+    def positions(self, doc_id):
+        if doc_id not in self._postings:
+            return []
+        return self._postings[doc_id].positions
 
     @classmethod
     def deserialize(cls, text: str):

@@ -2,6 +2,7 @@ import re
 import time
 import math
 from os import linesep
+
 from heap import MaxHeap
 
 EVAL_FOLDER = "./evaluation"
@@ -107,10 +108,9 @@ def get_related_docs(client, tokens):
     return relevant_docs
 
 
-def write_query_results(qid, ranked_docs, result_file):
-    with open(result_file, "a") as fp:
-        for rank, (score, doc_id) in enumerate(ranked_docs, start=1):
-            fp.write(f"{qid} Q0 {doc_id} {rank} {score} Exp{linesep}")
+def write_query_results(qid, ranked_docs, out_fp):
+    for rank, (score, doc_id) in enumerate(ranked_docs, start=1):
+        out_fp.write(f"{qid} Q0 {doc_id} {rank} {score} Exp{linesep}")
 
 
 ##############################
@@ -129,91 +129,133 @@ def model_template(client, tokens, scoring_func, size=1000):
     scoring_start_time = time.time()
     print(f"    score_docs={len(doc_ids)}(documents)")
     for _id in doc_ids:
-        score = scoring_func(_id, tokens)
+        score = scoring_func(client, _id, tokens)
         scored_docs.push((score, _id))
     print(f"    elapsed_t={time_used(scoring_start_time)}")
     return scored_docs.top()
 
 
-def tf_model(client, tokens):
-    return model_template(
-        client=client,
-        tokens=tokens,
-        scoring_func=lambda d, q: sum(okapi_tf(client, d, w) for w in q)
-    )
+def tf_model(client, d, q):
+    return sum(okapi_tf(client, d, w) for w in q)
 
 
-def tf_idf_model(client, tokens):
-    return model_template(
-        client=client,
-        tokens=tokens,
-        scoring_func=lambda d, q: sum(okapi_tf(client, d, w) * math.log(D / get_raw_df(client, w)) for w in q)
-    )
+def tf_idf_model(client, d, q):
+    return sum(okapi_tf(client, d, w) * math.log(D / get_raw_df(client, w)) for w in q)
 
 
-def bm_25_model(client, tokens):
-    def score(d, q):
-        k1 = 1.5  # k1 is bumped up by 0.2 to the standard 1.2
-        k2 = 500
-        b = 0.75
-        ans = 0
-        for w in q:
-            tf_w_d = get_raw_tf(client, d, w)
-            tf_w_q = q.count(w)
-            c1 = math.log((D + 0.5) / (get_raw_df(client, w) + 0.5))
-            c2 = (tf_w_d + k1 * tf_w_d) / (tf_w_d + k1 * ((1 - b) + b * (client.doc_length(d) / AVG_DOC_LENGTH)))
-            c3 = (tf_w_q + k2 * tf_w_q) / (tf_w_q + k2)
-            ans += c1 * c2 * c3
-        return ans
-
-    return model_template(
-        client=client,
-        tokens=tokens,
-        scoring_func=score
-    )
+def bm_25_model(client, d, q):
+    k1 = 1.5  # k1 is bumped up by 0.2 to the standard 1.2
+    k2 = 500
+    b = 0.75
+    ans = 0
+    for w in q:
+        tf_w_d = get_raw_tf(client, d, w)
+        tf_w_q = q.count(w)
+        c1 = math.log((D + 0.5) / (get_raw_df(client, w) + 0.5))
+        c2 = (tf_w_d + k1 * tf_w_d) / (tf_w_d + k1 * ((1 - b) + b * (client.doc_length(d) / AVG_DOC_LENGTH)))
+        c3 = (tf_w_q + k2 * tf_w_q) / (tf_w_q + k2)
+        ans += c1 * c2 * c3
+    return ans
 
 
-def laplace_smoothing_language_model(client, tokens):
+def laplace_smoothing_language_model(client, d, q):
     def p_laplace(w, d):
         return (get_raw_tf(client, d, w) + 1) / (client.doc_length(d) + V)
 
-    return model_template(
-        client=client,
-        tokens=tokens,
-        scoring_func=lambda d, q: sum(math.log(p_laplace(w, d)) for w in q)
-    )
+    return sum(math.log(p_laplace(w, d)) for w in q)
 
 
-def jelinek_mercer_smoothing_language_model(client, tokens):
+def jelinek_mercer_smoothing_language_model(client, d, q):
     def p_jm(w, d):
         # the smoothing parameter lambda
         s_p = 0.8
         return s_p * (get_raw_tf(client, d, w) / client.doc_length(d)) + (1 - s_p) * (get_raw_ttf(client, w) / SUM_TTF)
 
-    return model_template(
-        client=client,
-        tokens=tokens,
-        scoring_func=lambda d, q: sum(math.log(p_jm(w, d)) for w in q)
-    )
+    return sum(math.log(p_jm(w, d)) for w in q)
+
+
+def proximity_search_model(client, d, q):
+    def _smallest_blurb(positions):
+        min_cover = SUM_TTF
+        pointers = {term: 0 for term in positions.keys()}
+        frontier = {term: positions[0] for term, positions in positions.items()}
+        done = set()
+        while True:
+            min_cover = min(min_cover, max(frontier.values()) - min(frontier.values()))
+            reach_end = all(pointer >= len(positions[term]) for term, pointer in pointers.items())
+            if reach_end:
+                break
+
+            tmp = [(term, pos) for term, pos in frontier.items() if term not in done]
+            term_to_be_advanced, _ = min(tmp, key=lambda kv: kv[1])
+
+            pointers[term_to_be_advanced] += 1
+            advanced_p = pointers[term_to_be_advanced]
+            if advanced_p >= len(positions[term_to_be_advanced]):
+                done.add(term_to_be_advanced)
+            else:
+                frontier[term_to_be_advanced] = positions[term_to_be_advanced][advanced_p]
+        return min_cover
+
+    def _bigram_min_cover_score(d, q):
+        groups = []
+        for i in range(len(q) - 1):
+            groups.append((q[i], q[i + 1]))
+
+        score = 0
+        for bigram in groups:
+            positions_by_term = dict()
+            for term in bigram:
+                positions = client.positions(term, d)
+                if len(positions) > 0:
+                    positions_by_term[term] = positions
+
+            if len(positions_by_term) < 2:
+                continue
+
+            min_cover = _smallest_blurb(positions_by_term)
+            if min_cover == 0:
+                score += min_cover
+            else:
+                normalized_min_cover = min_cover / len(positions_by_term)
+                score += math.log(1.5 + math.exp(1 / normalized_min_cover))
+
+        return score
+
+    def _min_dist_score(d, q):
+        positions_by_term = dict()
+        for term in q:
+            positions = client.positions(term, d)
+            if len(positions) > 0:
+                positions_by_term[term] = positions
+
+        term_in_both_dq = list(positions_by_term.keys())
+        pairs = []
+        for i in range(len(term_in_both_dq) - 1):
+            for j in range(i + 1, len(term_in_both_dq)):
+                pairs.append((term_in_both_dq[i], term_in_both_dq[j]))
+
+        if len(pairs) == 0:
+            min_dist = client.doc_length(d)
+        else:
+            min_dist = min(_smallest_blurb({term: positions_by_term[term] for term in pair}) for pair in pairs)
+
+        return math.log(1.5 + math.exp(0 - min_dist))
+
+    return _bigram_min_cover_score(d, q) + tf_idf_model(client, d, q)
 
 
 ##############################
 #       Model Runner         #
 ##############################
-def run_engine_with(model, client, queries, result_file):
+def run_engine_with(model, client, queries, out_fp):
     print(f"Model: {model.__name__}")
     run_model_start_time = time.time()
     for qid, tokens in queries.items():
         start = time.time()
         print(f"Run query={qid} with {model.__name__}")
         print(f"    tokens={tokens}")
-        write_query_results(qid, model(client=client, tokens=tokens), result_file)
+        top_docs = model_template(client=client, tokens=tokens, scoring_func=model)
+        write_query_results(qid, top_docs, out_fp)
         print(f"    total_time={time_used(start)}")
     print(f"Elapsed time: {time_used(run_model_start_time)}{linesep * 3}")
-
-
-##############################
-#            Main            #
-##############################
-# Available models to use for the purpose of scoring documents given a query.
-# Do not change the representations arbitrarily as they map to dir names.

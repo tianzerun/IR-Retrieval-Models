@@ -1,8 +1,10 @@
 import time
+from abc import ABC, abstractmethod
+
+from elasticsearch import Elasticsearch, helpers
+
 import indexer
 import tokenizer
-from abc import ABC, abstractmethod
-from elasticsearch import Elasticsearch, helpers
 
 
 def time_used(start):
@@ -46,8 +48,20 @@ class Search(ABC):
     def doc_length(self, doc_id):
         pass
 
+    @abstractmethod
+    def cache_docs(self, ids):
+        pass
+
+    @abstractmethod
+    def positions(self, term, doc_id):
+        pass
+
 
 class ESearch(Search):
+    DOC_ID = "doc_id"
+    TERMS = "terms"
+    DOC_LEN = "doc_len"
+
     def __init__(self, hostname, index, field):
         self._es = Elasticsearch(hostname)
         self._index = index
@@ -79,11 +93,15 @@ class ESearch(Search):
         ).get("count", 0)
 
     def tf(self, term, doc_id):
+        term = term.lower()
+        if doc_id not in self._docs:
+            self._docs[doc_id] = self._term_vectors(doc_id)
+
         doc = self._docs[doc_id]
         return 0 if doc["terms"].get(term) is None else doc["terms"][term]["term_freq"]
 
     def _term_vectors(self, doc_id):
-        return self._es.termvectors(
+        return self._build_doc_struct(self._es.termvectors(
             index=self._index,
             id=doc_id,
             fields=[self._field],
@@ -91,7 +109,7 @@ class ESearch(Search):
             term_statistics=False,
             positions=False,
             offsets=False
-        )["term_vectors"][self._field]["terms"]
+        ))
 
     def ttf(self, term):
         hits = self._es.search(
@@ -136,18 +154,12 @@ class ESearch(Search):
         )["term_vectors"][self._field]["field_statistics"]["sum_ttf"]
 
     def doc_length(self, doc_id):
-        return self._docs[doc_id]["doc_len"]
+        doc = self._docs.get(doc_id, None)
+        if doc is None:
+            doc = self._term_vectors(doc_id)
+        return doc[self.DOC_LEN]
 
     def cache_docs(self, ids):
-        def build_doc_struct(_doc):
-            return {
-                "doc_id": _doc["_id"],
-                "terms": _doc["term_vectors"]["text"]["terms"],
-                "doc_len": sum(stats["term_freq"]
-                               for stats in
-                               _doc["term_vectors"]["text"]["terms"].values())
-            }
-
         ids = list(set(ids) - set(self._docs.keys()))
         print(f"    fetch_docs={len(ids)}(documents)")
         fetching_docs_start_time = time.time()
@@ -164,27 +176,58 @@ class ESearch(Search):
                 positions=False
             )
             for doc in res["docs"]:
-                self._docs[doc["_id"]] = build_doc_struct(doc)
+                self._docs[doc["_id"]] = self._build_doc_struct(doc)
             p += size
         print(f"    elapsed_t={time_used(fetching_docs_start_time)}")
         print(f"    ...cached {len(ids)} docs...")
 
+    @classmethod
+    def _build_doc_struct(cls, _doc):
+        return {
+            cls.DOC_ID: _doc["_id"],
+            cls.TERMS: _doc["term_vectors"]["text"]["terms"],
+            cls.DOC_LEN: sum(stats["term_freq"]
+                             for stats in
+                             _doc["term_vectors"]["text"]["terms"].values())
+        }
+
     def search(self, **kwargs):
         return self._es.search(index=self._index, **kwargs)
+
+    def positions(self, term, doc_id):
+        term_data = self._es.termvectors(
+            index=self._index,
+            id=doc_id,
+            fields=[self._field],
+            body={
+                "filter": {
+                    "min_word_length": len(term),
+                    "max_word_length": len(term)
+                }
+            },
+            term_statistics=False,
+            field_statistics=False,
+            offsets=False,
+            positions=True
+        )["term_vectors"][self._field]["terms"].get(term, None)
+        if term_data is None:
+            return []
+        else:
+            return [pos["position"] for pos in term_data["tokens"]]
 
 
 class ZSearch(Search):
     def __init__(self, index_fp, catalog, term_ids_map, doc_ids_map, doc_len_map,
-                 converter=indexer.TextProcessor, exclude=None, stemmer=None):
+                 decompressor=None, exclude=None, stemmer=None):
         self._index_fp = index_fp
         self._catalog = catalog
         self._term_ids_map = term_ids_map
         self._doc_ids_map = doc_ids_map
         self._doc_len_map = doc_len_map
         self._sum_ttf = sum(ttf for ttf in self._doc_len_map.values())
-        self._converter = converter
         self._tokenizer = tokenizer.build_tokenizer(exclude=exclude, stemmer=stemmer)
         self._cached_inverted_list = dict()
+        self._decoder = indexer.TextProcessor.decoder(decompressor)
 
     def _load_inverted_list(self, term):
         if term not in self._cached_inverted_list:
@@ -192,7 +235,7 @@ class ZSearch(Search):
             if term_id is not None:
                 offset = self._catalog.get_offset(term_id)
                 size = self._catalog.get_size(term_id)
-                raw = indexer.read(self._index_fp, offset, size, self._converter.decoder())
+                raw = indexer.read(self._index_fp, offset, size, self._decoder)
                 self._cached_inverted_list[term] = indexer.InvertedList.deserialize(raw)
             else:
                 self._cached_inverted_list[term] = indexer.InvertedList.dummy()
@@ -231,3 +274,6 @@ class ZSearch(Search):
     def cache_docs(self, ids):
         pass
 
+    def positions(self, term, doc_id):
+        doc_integer_id = self._doc_ids_map[doc_id]
+        return self._load_inverted_list(term).positions(doc_integer_id)
