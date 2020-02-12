@@ -8,3 +8,4 @@ venv/
 # Ingore evaluation folder and tmp folder
 evaluation/
 tmp/
+index/
