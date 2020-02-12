@@ -169,7 +169,8 @@ def jelinek_mercer_smoothing_language_model(client, d, q):
     def p_jm(w, d):
         # the smoothing parameter lambda
         s_p = 0.8
-        return s_p * (get_raw_tf(client, d, w) / client.doc_length(d)) + (1 - s_p) * (get_raw_ttf(client, w) / SUM_TTF)
+        score = s_p * (get_raw_tf(client, d, w) / client.doc_length(d)) + (1 - s_p) * (get_raw_ttf(client, w) / SUM_TTF)
+        return score if score != 0 else (1 - s_p) * (1 / V)
 
     return sum(math.log(p_jm(w, d)) for w in q)
 
